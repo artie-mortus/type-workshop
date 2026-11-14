@@ -29,3 +29,7 @@ For a reported font, add `--font /path/to/font.ttf` to the tracking checks. The 
 Run `node --experimental-vm-modules scripts/verify-async.cjs` for deterministic file-selection races, worker initialization, and failure recovery checks. This uses Node's built-in modules and mocks the DOM and Python engine.
 
 The entry script URL in `index.html` carries a release version, which is forwarded to the worker URL. Bump that version whenever shipping application or worker changes so browsers fetch both scripts together.
+
+Run `python3 scripts/verify-edge-fonts.py` for synthetic composite geometry, compressed input formats, cached-width invalidation, font-name fallbacks, and CID-keyed CFF checks. The CID case uses the system Noto Sans CJK collection when available. CFF exports support both CID private dictionaries and older seac composite outlines. Tracking discards cached device widths and refreshes the average-width metadata.
+
+Changing a font or adjustment clears the previous export until a new font is ready. Copy CSS and Download remain disabled during generation or after an error.

@@ -46,3 +46,24 @@ Verified 2026-11-14 with the reported Special Elite Regular font, 2,048 units pe
 - `node --experimental-vm-modules scripts/verify-async.cjs` checks superseded file reads, stale inspection and generation errors, delayed FontFace results, fatal worker recovery, shared initialization, retry after engine download failure, and consistent script versions. The stale-read case failed before the fix. All cases now pass.
 
 The browser cache harness and downloaded font are retained locally under `test-results/gui/verify-special-elite.cjs` and `test-results/gui/special-elite-negative.ttf`.
+
+## Broader site audit
+
+Verified 2026-11-14 after fixing additional reproducible failures.
+
+- CID-keyed CFF adjustment failed because the worker assumed every CFF font had a single top-level Private dictionary. Each charstring now uses its own Private dictionary, including CID font dictionaries.
+- Older CFF seac composites failed because the output pen had no glyph set for component expansion. Recording now decomposes those outlines before transformation.
+- Tracking retained stale `hdmx` pixel advances and `LTSH` thresholds. These caches are now removed, and `OS/2.xAvgCharWidth` is refreshed from the adjusted advances.
+- Export controls could copy stale or placeholder CSS while a new adjustment was pending or had failed. Both export actions now require a current result. New loads clear the previous metadata and previews, and file selection can retry the same file.
+- Cross-tab theme changes reset custom specimen colors. They now preserve them, as the local switch already did.
+- Font metadata now uses typographic family/style names when available and supplies usable defaults when legacy names are missing.
+
+Validation:
+
+- `python3 scripts/verify-edge-fonts.py` passes synthetic TrueType and CFF outline bounds, transformed composites, decoded CFF widths, all four advertised input formats, cached metric invalidation, typographic-only and missing names, and a real Noto Sans CJK CID subset.
+- `node --experimental-vm-modules scripts/verify-async.cjs` passes existing races/recovery checks plus stale CSS, metadata clearing, and custom-color preservation.
+- The existing 48 tracking combinations and six full-font export checks pass.
+- Real Chromium/Pyodide passes load, adjustment, reset, and recovery for TTF, OTF, WOFF, WOFF2, CID-keyed CFF, and variable fonts. Empty family names and corrupt fonts disable export; loading a valid font recovers. Layout checks pass at 320, 390, 760, 761, 889, 1024, and 1440 pixels. No JavaScript runtime errors were observed.
+- A deterministic sample of 39 supported system-font subsets passes three stretch/tracking combinations each, checking every glyph advance and decoded CFF charstring width. One bitmap-only font was excluded because its outlines are outside the declared supported formats. Subsetting dropped source FFTM metadata with expected fontTools warnings.
+
+The last audit pass found no further bugs in these checks. Browser and corpus harnesses remain locally in `test-results/gui/audit-site.cjs` and `test-results/audit-corpus.py`. CFF2 support, point-attached TrueType composite stretching, and rescaling GPOS kerning remain declared limitations rather than newly supported features.

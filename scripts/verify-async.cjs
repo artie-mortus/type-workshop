@@ -7,17 +7,21 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a,b) 
 async function appChecks() {
  const elements = new Map();
  const element = id => { if(!elements.has(id)) elements.set(id, {value:'',disabled:true,textContent:'',style:{},dataset:{},setAttribute(){},replaceChildren(){},querySelector(){return element(id+' span')},classList:{toggle(){}}}); return elements.get(id); };
- const workers=[];
+ const workers=[]; const listeners={}; const copied=[];
  class Worker {
   constructor(url){ this.url=String(url); this.messages=[]; workers.push(this); }
   postMessage(message){this.messages.push(message);}
   terminate(){this.terminated=true;}
   reply(message,data){this.onmessage({data:{id:message.id,...data}});}
  }
- const context=vm.createContext({URL,Worker,Uint8Array,Map,Error,performance,clearTimeout,setTimeout,localStorage:{getItem:()=>null},window:{addEventListener(){}},document:{getElementById:element,documentElement:{dataset:{theme:'dark'}},querySelectorAll:()=>[],fonts:new Set()},faceLoads:[],FontFace:class {constructor(family){this.family=family;} async load(){await context.faceLoads.shift();return this;}},navigator:{}});
+ const context=vm.createContext({URL,Worker,Uint8Array,Map,Error,performance,clearTimeout,setTimeout,localStorage:{getItem:()=>null},window:{addEventListener(name,handler){listeners[name]=handler;}},document:{getElementById:element,documentElement:{dataset:{theme:'dark'}},querySelectorAll:()=>[],fonts:new Set()},faceLoads:[],FontFace:class {constructor(family){this.family=family;} async load(){await context.faceLoads.shift();return this;}},navigator:{clipboard:{async writeText(text){copied.push(text);}}}});
  const module=new vm.SourceTextModule(fs.readFileSync('app.js','utf8')+'\nglobalThis.runApp = code => eval(code);',{context,initializeImportMeta(meta){meta.url='http://localhost/app.js?v=test-release';}});
  await module.link(()=>{});await module.evaluate();
  const run = code => context.runApp(code);
+ await element('copy').onclick();
+ assert.equal(copied.length,0,'Copy must not publish a stale or placeholder export');
+ element('color').value='#ff9900';listeners.storage({key:'type-workshop-theme',newValue:'light'});
+ assert.equal(element('color').value,'#ff9900','Cross-tab theme changes must preserve custom specimen colors');
  const first=deferred();context.firstBytes=first.promise;
  const slow=run("load({name:'old.ttf',arrayBuffer:()=>firstBytes})");
  const latest=run("load({name:'new.ttf',arrayBuffer:async()=>new Uint8Array([2])})");await tick();
@@ -31,6 +35,7 @@ async function appChecks() {
  const generation=run('generate()');const stale=workers[0].messages.at(-1);
  const replacement=run("load({name:'replacement.ttf',arrayBuffer:async()=>new Uint8Array([3])})");await tick();
  const current=workers[0].messages.at(-1);
+ assert.equal(element('meta').textContent,'','Loading another font must clear previous metadata');
  workers[0].reply(stale,{error:'old generation failed'});await generation;
  assert(!element('status').textContent.includes('old generation failed'),'Stale generation error overwrites the active load status');
  workers[0].reply(current,{meta});await tick();

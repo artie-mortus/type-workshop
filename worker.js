@@ -15,7 +15,7 @@ import io, json, re
 from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
 from fontTools.pens.transformPen import TransformPen
-from fontTools.pens.recordingPen import RecordingPen
+from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.ttLib.tables.ttProgram import Program
 
@@ -26,7 +26,7 @@ def read(data):
 
 def inspect(data):
  f=read(data)
- return json.dumps(dict(family=f['name'].getDebugName(1),style=f['name'].getDebugName(2),upem=f['head'].unitsPerEm,glyphs=len(f.getGlyphOrder()),axes=[dict(tag=a.axisTag,min=a.minValue,max=a.maxValue,default=a.defaultValue) for a in f['fvar'].axes] if 'fvar' in f else []))
+ return json.dumps(dict(family=f['name'].getBestFamilyName() or 'Untitled',style=f['name'].getBestSubFamilyName() or 'Regular',upem=f['head'].unitsPerEm,glyphs=len(f.getGlyphOrder()),axes=[dict(tag=a.axisTag,min=a.minValue,max=a.maxValue,default=a.defaultValue) for a in f['fvar'].axes] if 'fvar' in f else []))
 
 def generate(data,options):
  o=json.loads(options); f=read(data)
@@ -53,18 +53,25 @@ def generate(data,options):
     g.program=Program()
    for tag in ['fpgm','prep','cvt ','hdmx','LTSH','VDMX']: 
     if tag in f: del f[tag]
+ if tracking!=0:
+  for tag in ['hdmx','LTSH']:
+   if tag in f: del f[tag]
  if 'CFF ' in f and (scale!=1 or tracking!=0):
    top=f['CFF '].cff.topDictIndex[0]; gs=f.getGlyphSet()
    recordings={}
    for name in f.getGlyphOrder():
-    pen=RecordingPen(); gs[name].draw(TransformPen(pen,(scale,0,0,1,0,0))); recordings[name]=pen
-   top.Private.nominalWidthX=0
-   top.Private.defaultWidthX=0
+    pen=DecomposingRecordingPen(gs); gs[name].draw(TransformPen(pen,(scale,0,0,1,0,0))); recordings[name]=pen
+   # CID-keyed CFF fonts store a separate Private dictionary per font dict.
+   privates={name:top.CharStrings[name].private for name in f.getGlyphOrder()}
+   for private in privates.values():
+    private.nominalWidthX=0
+    private.defaultWidthX=0
    for name,recording in recordings.items():
     pen=T2CharStringPen(widths[name],None); recording.replay(pen)
-    top.CharStrings[name]=pen.getCharString(private=top.Private,globalSubrs=top.GlobalSubrs)
+    top.CharStrings[name]=pen.getCharString(private=privates[name],globalSubrs=top.GlobalSubrs)
  for name,(advance,lsb) in list(f['hmtx'].metrics.items()):
   f['hmtx'][name]=(widths[name],round(lsb*scale))
+ if 'OS/2' in f: f['OS/2'].recalcAvgCharWidth(f)
  family=o['family'].strip(); style=o['style'].strip()
  if not family or not style: raise ValueError('Family and style names cannot be empty.')
  ps=re.sub('[^A-Za-z0-9-]','',family+'-'+style)[:63] or 'Workshop-Regular'

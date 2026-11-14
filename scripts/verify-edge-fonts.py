@@ -1,0 +1,129 @@
+"""Export checks for composite outlines, CID CFF, cached metrics, input formats, and font names."""
+import io
+import json
+from pathlib import Path
+from fontTools.fontBuilder import FontBuilder
+from fontTools.pens.ttGlyphPen import TTGlyphPen
+from fontTools.pens.t2CharStringPen import T2CharStringPen
+from fontTools.misc.psCharStrings import T2CharString
+from fontTools.ttLib import TTFont, TTCollection, newTable
+from fontTools.pens.boundsPen import BoundsPen
+from fontTools.pens.basePen import NullPen
+from fontTools import subset
+
+root = Path(__file__).resolve().parents[1]
+exec((root / 'worker.js').read_text().split('const source = `')[1].split('`;')[0])
+
+def export(font, **changes):
+    stream = io.BytesIO(); font.save(stream)
+    options = dict(axes={}, scale=1, tracking=.05, family='Edge Test', style='Regular')
+    options.update(changes)
+    return TTFont(io.BytesIO(generate(stream.getvalue(), json.dumps(options))))
+
+def fixture(cff=False):
+    builder = FontBuilder(1000, isTTF=not cff)
+    names = ['.notdef', 'A', 'acute', 'Aacute', 'space']
+    builder.setupGlyphOrder(names)
+    builder.setupCharacterMap({65: 'A', 193: 'Aacute', 32: 'space'})
+    builder.setupHorizontalMetrics({name: (600, 0) for name in names})
+    builder.setupHorizontalHeader(ascent=800, descent=-200)
+    builder.setupNameTable(dict(familyName='Edge Source', styleName='Regular'))
+    builder.setupOS2(); builder.setupPost()
+    if cff:
+        strings = {}
+        for name in names:
+            pen = T2CharStringPen(600, None)
+            if name in ['A', 'acute']:
+                pen.moveTo((0, 0)); pen.lineTo((100, 0)); pen.lineTo((100, 200)); pen.closePath()
+            strings[name] = pen.getCharString()
+        # Deprecated seac composites still appear in otherwise valid CFF fonts.
+        strings['Aacute'] = T2CharString(program=[600, 20, 200, 65, 194, 'endchar'])
+        builder.setupCFF('EdgeSource', {}, strings, {})
+    else:
+        glyphs = {}
+        for name in names:
+            pen = TTGlyphPen(glyphs)
+            if name == 'Aacute':
+                pen.addComponent('A', (1, .25, .5, 1, 20, 200))
+            elif name in ['A', 'acute']:
+                pen.moveTo((0, 0)); pen.lineTo((100, 0)); pen.lineTo((100, 200)); pen.closePath()
+            glyphs[name] = pen.glyph()
+        builder.setupGlyf(glyphs)
+    return builder.font
+
+def check_seac():
+    output = export(fixture(cff=True), scale=1.2)
+    assert output['hmtx']['Aacute'][0] == 770
+    verify_cff_widths(output)
+    print('PASS: CFF seac composite export')
+
+def check_cid():
+    path = Path('/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc')
+    if not path.exists():
+        print('SKIP: CID CFF system fixture unavailable'); return
+    font = TTCollection(path).fonts[0]
+    sub = subset.Subsetter(); sub.populate(text='Aé中'); sub.subset(font)
+    output = export(font, scale=1.2)
+    assert 'CFF ' in output
+    assert output['CFF '].cff.topDictIndex[0].ROS
+    verify_cff_widths(output)
+    print('PASS: CID-keyed CFF export')
+
+def check_metrics():
+    font = fixture()
+    font['hdmx'] = newTable('hdmx'); font['hdmx'].hdmx = {16: {n: 10 for n in font.getGlyphOrder()}}
+    output = export(font)
+    assert 'hdmx' not in output, 'Tracking must discard cached pixel widths'
+    average = output['OS/2'].xAvgCharWidth
+    output['OS/2'].recalcAvgCharWidth(output)
+    assert average == output['OS/2'].xAvgCharWidth, 'Average width must reflect adjusted metrics'
+    print('PASS: tracking invalidates device metrics and refreshes average width')
+
+def verify_cff_widths(font):
+    for name in font.getGlyphOrder():
+        char = font['CFF '].cff.topDictIndex[0].CharStrings[name]
+        char.draw(NullPen())
+        assert char.width == font['hmtx'][name][0], name
+
+def check_geometry_and_formats():
+    for cff in [False, True]:
+        source = fixture(cff=cff)
+        glyphs = source.getGlyphSet()
+        for flavor in [None, 'woff', 'woff2']:
+            source.flavor = flavor
+            for scale in [.5, 1, 2]:
+                output = export(source, scale=scale, tracking=-.1)
+                assert output.flavor is None
+                assert output['name'].getBestFamilyName() == 'Edge Test'
+                for name in source.getGlyphOrder():
+                    a = BoundsPen(glyphs); glyphs[name].draw(a)
+                    transformed = output.getGlyphSet()
+                    b = BoundsPen(transformed); transformed[name].draw(b)
+                    if a.bounds is None:
+                        assert b.bounds is None
+                    else:
+                        expected = tuple(v * scale if i % 2 == 0 else v for i, v in enumerate(a.bounds))
+                        assert all(abs(x-y) <= 1 for x, y in zip(expected, b.bounds)), (cff, flavor, scale, name, expected, b.bounds)
+                if cff: verify_cff_widths(output)
+    print('PASS: TrueType and CFF outlines, transformed composites, TTF/OTF/WOFF/WOFF2 inputs')
+
+def check_names():
+    font = fixture()
+    font['name'].names = []
+    stream = io.BytesIO(); font.save(stream)
+    metadata = json.loads(inspect(stream.getvalue()))
+    assert metadata['family'] == 'Untitled' and metadata['style'] == 'Regular'
+    for name_id, value in [(16, 'Typographic Family'), (17, 'Book')]:
+        font['name'].setName(value, name_id, 3, 1, 0x409)
+    stream = io.BytesIO(); font.save(stream)
+    metadata = json.loads(inspect(stream.getvalue()))
+    assert metadata['family'] == 'Typographic Family' and metadata['style'] == 'Book'
+    print('PASS: missing legacy names and typographic-only family/style names')
+
+if __name__ == '__main__':
+    failures = []
+    for check in [check_seac, check_cid, check_metrics, check_geometry_and_formats, check_names]:
+        try: check()
+        except Exception as error:
+            failures.append(error); print(f'FAIL: {check.__name__}: {type(error).__name__}: {error}')
+    assert not failures, f'{len(failures)} export checks failed'
