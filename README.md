@@ -16,4 +16,6 @@ Deploy the four application files to any static web host. No build step or backe
 
 ## Verification status
 
-JavaScript syntax checks passed. A local Python check reopened a transformed TrueType export and verified its advance width. Browser processing, CFF exports, variable font exports, FontForge compatibility, and the 150 ms response target still need acceptance testing. CFF2 outlines are explicitly rejected.
+TrueType, CFF, and variable browser exports were downloaded and reopened in FontForge. Every exported advance was checked against the expected font-unit adjustment. Full-font transformation checks cover tracking and 120% stretch. See [verification evidence](test-results/verification.md) for measurements, source warnings, and limitations.
+
+CFF2 outlines remain unsupported. Processing latency depends on font size and device speed.

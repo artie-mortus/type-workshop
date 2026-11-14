@@ -39,11 +39,13 @@ def generate(data,options):
     g.program=Program()
    for tag in ['fpgm','prep','cvt ','hdmx','LTSH','VDMX']: 
     if tag in f: del f[tag]
-  else:
+ if 'CFF ' in f and (scale!=1 or tracking!=0):
    top=f['CFF '].cff.topDictIndex[0]; gs=f.getGlyphSet()
    recordings={}
    for name in f.getGlyphOrder():
     pen=RecordingPen(); gs[name].draw(TransformPen(pen,(scale,0,0,1,0,0))); recordings[name]=pen
+   top.Private.nominalWidthX=0
+   top.Private.defaultWidthX=0
    for name,recording in recordings.items():
     pen=T2CharStringPen(round(f['hmtx'][name][0]*scale)+tracking,None); recording.replay(pen)
     top.CharStrings[name]=pen.getCharString(private=top.Private,globalSubrs=top.GlobalSubrs)
