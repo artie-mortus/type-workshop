@@ -1,5 +1,15 @@
 importScripts('https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js');
-let engine;
+let engine,initializing;
+async function getEngine(){
+ if(!initializing)initializing=(async()=>{
+  postMessage({status:'Loading browser Python and fontTools…'});
+  const loaded=await loadPyodide();
+  await loaded.loadPackage(['fonttools','brotli']);
+  loaded.runPython(source);
+  return loaded;
+ })().catch(error=>{initializing=null;throw error});
+ return initializing;
+}
 const source = `
 import io, json, re
 from fontTools.ttLib import TTFont
@@ -74,4 +84,4 @@ function processingError(error) {
  const lines=String(error.message||error).trim().split('\n');
  return lines.at(-1).replace(/^(?:[\w.]*Error|Exception):\s*/, '');
 }
-onmessage=async({data:m})=>{try{if(!engine){postMessage({status:'Loading browser Python and fontTools…'});engine=await loadPyodide();await engine.loadPackage(['fonttools','brotli']);engine.runPython(source)}engine.globals.set('input_bytes',m.bytes);if(m.type==='inspect'){postMessage({id:m.id,meta:JSON.parse(engine.runPython('inspect(input_bytes)'))})}else{engine.globals.set('options',JSON.stringify(m.options));let result=engine.runPython('generate(input_bytes,options)');let bytes=result.toJs();result.destroy();postMessage({id:m.id,bytes},[bytes.buffer])}}catch(e){postMessage({id:m.id,error:processingError(e)})}};
+onmessage=async({data:m})=>{try{engine=await getEngine();engine.globals.set('input_bytes',m.bytes);if(m.type==='inspect'){postMessage({id:m.id,meta:JSON.parse(engine.runPython('inspect(input_bytes)'))})}else{engine.globals.set('options',JSON.stringify(m.options));let result=engine.runPython('generate(input_bytes,options)');let bytes=result.toJs();result.destroy();postMessage({id:m.id,bytes},[bytes.buffer])}}catch(e){postMessage({id:m.id,error:processingError(e)})}};

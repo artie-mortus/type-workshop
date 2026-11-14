@@ -23,3 +23,9 @@ TrueType, CFF, and variable browser exports were downloaded and reopened in Font
 CFF2 outlines remain unsupported. Processing latency depends on font size and device speed.
 
 Tracking keeps combining marks and other zero-advance glyphs at zero. Negative tracking stops other advances at zero so tight spacing can still export a valid font. Run `python3 scripts/verify-tracking.py` to check negative and positive tracking across TrueType, CFF, and variable fonts using the same system fixtures as the export checks.
+
+For a reported font, add `--font /path/to/font.ttf` to the tracking checks. The matrix includes unchanged tracking as well as negative and positive adjustments.
+
+Run `node --experimental-vm-modules scripts/verify-async.cjs` for deterministic file-selection races, worker initialization, and failure recovery checks. This uses Node's built-in modules and mocks the DOM and Python engine.
+
+The entry script URL in `index.html` carries a release version, which is forwarded to the worker URL. Bump that version whenever shipping application or worker changes so browsers fetch both scripts together.
