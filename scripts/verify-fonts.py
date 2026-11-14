@@ -16,7 +16,7 @@ for kind,path in fixtures.items():
   assert 'fvar' not in font
   assert font['name'].getDebugName(1)=='Verified Workshop'
   for name,(advance,lsb) in base['hmtx'].metrics.items():
-   assert font['hmtx'][name][0]==round(advance*scale)+round(base['head'].unitsPerEm*.05)
+   assert font['hmtx'][name][0]==(round(advance*scale)+round(base['head'].unitsPerEm*.05) if advance else 0)
   ext='otf' if kind=='cff' else 'ttf'
   target=root/f'test-results/{kind}-{scale}.{ext}';target.write_bytes(output)
   print(kind,scale,'PASS',len(output),'bytes; all advances verified')

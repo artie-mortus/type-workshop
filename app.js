@@ -1,4 +1,16 @@
 const $=id=>document.getElementById(id),worker=new Worker('worker.js');let original,meta,result,loadId=0,revision=0,timer,busy=false,pending=false;const jobs=new Map();let serial=0;
+const themeColors={dark:'#e0e7f4',light:'#243452'};
+function setTheme(theme,save=false){
+ const previous=document.documentElement.dataset.theme;
+ document.documentElement.dataset.theme=theme;
+ $('theme-switch').setAttribute('aria-checked',String(theme==='dark'));
+ $('theme-label').textContent=theme==='dark'?'Dark':'Light';
+ if(!save||$('color').value===themeColors[previous])$('color').value=themeColors[theme];
+ if(save){try{localStorage.setItem('type-workshop-theme',theme)}catch{}preview()}
+}
+setTheme(document.documentElement.dataset.theme);
+$('theme-switch').onclick=()=>setTheme(document.documentElement.dataset.theme==='dark'?'light':'dark',true);
+window.addEventListener('storage',event=>{if(event.key==='type-workshop-theme'){setTheme(event.newValue==='light'?'light':'dark');preview()}});
 function request(type,options){return new Promise((resolve,reject)=>{let id=++serial;jobs.set(id,{resolve,reject});worker.postMessage({id,type,bytes:original,options})})}worker.onmessage=({data:d})=>{if(d.status){$('status').textContent=d.status;return}let j=jobs.get(d.id);if(!j)return;jobs.delete(d.id);d.error?j.reject(Error(d.error)):j.resolve(d)};worker.onerror=e=>{$('status').textContent='Processing engine failed to load: '+e.message};
 function status(s){$('status').textContent=s}function options(){let axes={};document.querySelectorAll('[data-axis]').forEach(e=>axes[e.dataset.axis]=+e.value);if(meta.axes.some(a=>a.tag==='wdth'))axes.wdth=+$('width').value;return{axes,tracking:+$('tracking').value,scale:meta.axes.some(a=>a.tag==='wdth')?1:+$('width').value/100,family:$('family').value,style:$('style').value}}
 async function generate(){if(!original||!meta)return;if(busy){pending=true;return}busy=true;let rev=revision;const start=performance.now();$('download').disabled=true;status('Generating font…');try{let d=await request('generate',options());if(rev!==revision)return;let face=new FontFace('Adjusted'+rev,d.bytes);await face.load();if(rev!==revision)return;document.fonts.forEach(f=>{if(f.family.startsWith('Adjusted'))document.fonts.delete(f)});document.fonts.add(face);$('after').style.fontFamily=`"Adjusted${rev}"`;result=d.bytes;$('download').disabled=false;status(`Ready · ${Math.round(performance.now()-start)} ms processing time`);css()}catch(e){status('Cannot process this font: '+e.message)}finally{busy=false;if(pending){pending=false;generate()}}}

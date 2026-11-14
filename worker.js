@@ -24,6 +24,10 @@ def generate(data,options):
   location={a.axisTag:o['axes'].get(a.axisTag,a.defaultValue) for a in f['fvar'].axes}
   f=instantiateVariableFont(f,location,inplace=True)
  scale=o['scale']; tracking=round(o['tracking']*f['head'].unitsPerEm)
+ # Combining marks and control glyphs must retain their zero advance.
+ # Tight tracking can close a narrow glyph's advance, but cannot make it negative.
+ widths={name:max(0,round(advance*scale)+tracking) if advance else 0 for name,(advance,_) in f['hmtx'].metrics.items()}
+ if any(width>65535 for width in widths.values()): raise ValueError('This stretch or tracking exceeds the font width limit. Reduce the adjustment.')
  if scale!=1:
   if 'glyf' in f:
    for g in f['glyf'].glyphs.values():
@@ -47,12 +51,10 @@ def generate(data,options):
    top.Private.nominalWidthX=0
    top.Private.defaultWidthX=0
    for name,recording in recordings.items():
-    pen=T2CharStringPen(round(f['hmtx'][name][0]*scale)+tracking,None); recording.replay(pen)
+    pen=T2CharStringPen(widths[name],None); recording.replay(pen)
     top.CharStrings[name]=pen.getCharString(private=top.Private,globalSubrs=top.GlobalSubrs)
  for name,(advance,lsb) in list(f['hmtx'].metrics.items()):
-  width=round(advance*scale)+tracking
-  if width<0 or width>65535: raise ValueError('Adjustment creates an invalid advance width. Reduce tracking or stretch.')
-  f['hmtx'][name]=(width,round(lsb*scale))
+  f['hmtx'][name]=(widths[name],round(lsb*scale))
  family=o['family'].strip(); style=o['style'].strip()
  if not family or not style: raise ValueError('Family and style names cannot be empty.')
  ps=re.sub('[^A-Za-z0-9-]','',family+'-'+style)[:63] or 'Workshop-Regular'
@@ -67,4 +69,9 @@ def generate(data,options):
  out=io.BytesIO(); f.save(out)
  return out.getvalue()
 `;
-onmessage=async({data:m})=>{try{if(!engine){postMessage({status:'Loading browser Python and fontTools…'});engine=await loadPyodide();await engine.loadPackage(['fonttools','brotli']);engine.runPython(source)}engine.globals.set('input_bytes',m.bytes);if(m.type==='inspect'){postMessage({id:m.id,meta:JSON.parse(engine.runPython('inspect(input_bytes)'))})}else{engine.globals.set('options',JSON.stringify(m.options));let result=engine.runPython('generate(input_bytes,options)');let bytes=result.toJs();result.destroy();postMessage({id:m.id,bytes},[bytes.buffer])}}catch(e){postMessage({id:m.id,error:String(e.message||e)})}};
+// Pyodide errors include a Python traceback; show its final exception to the user.
+function processingError(error) {
+ const lines=String(error.message||error).trim().split('\n');
+ return lines.at(-1).replace(/^(?:[\w.]*Error|Exception):\s*/, '');
+}
+onmessage=async({data:m})=>{try{if(!engine){postMessage({status:'Loading browser Python and fontTools…'});engine=await loadPyodide();await engine.loadPackage(['fonttools','brotli']);engine.runPython(source)}engine.globals.set('input_bytes',m.bytes);if(m.type==='inspect'){postMessage({id:m.id,meta:JSON.parse(engine.runPython('inspect(input_bytes)'))})}else{engine.globals.set('options',JSON.stringify(m.options));let result=engine.runPython('generate(input_bytes,options)');let bytes=result.toJs();result.destroy();postMessage({id:m.id,bytes},[bytes.buffer])}}catch(e){postMessage({id:m.id,error:processingError(e)})}};
