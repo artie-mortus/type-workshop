@@ -2,6 +2,7 @@
 import io
 import json
 from pathlib import Path
+import sys
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.pens.t2CharStringPen import T2CharStringPen
@@ -12,7 +13,8 @@ from fontTools.pens.basePen import NullPen
 from fontTools import subset
 
 root = Path(__file__).resolve().parents[1]
-exec((root / 'worker.js').read_text().split('const source = `')[1].split('`;')[0])
+sys.path.insert(0, str(root))
+from engine import generate, inspect
 
 def export(font, **changes):
     stream = io.BytesIO(); font.save(stream)

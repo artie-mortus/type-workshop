@@ -1,6 +1,6 @@
 # Type workshop
 
-Static, browser-side font adjustment tool. Font bytes stay on your device.
+Adjusts a font's tracking, width, and variable axes, then exports a static TTF or OTF under a new name. You can use it as a web page or from the command line. Both run the same engine, and font bytes stay on your device either way.
 
 Dark mode is the default. Use the light switch on the right to select the original light palette. Your choice is saved in this browser when local storage is available.
 
@@ -14,7 +14,29 @@ python3 -m http.server 8000 --bind 127.0.0.1
 
 Open http://localhost:8000. Use HTTP rather than opening index.html directly because the app uses a Web Worker.
 
-Deploy the four application files and the three icon files (`icon.svg`, `favicon.ico`, `apple-touch-icon.png`) to any static web host. No build step or backend is required. The first font load downloads Pyodide, fontTools, and Brotli from jsDelivr, so an internet connection is required.
+To deploy, copy these files to any static web host:
+
+- the page: `index.html`, `style.css`, `app.js`, `worker.js`, `engine.py`
+- the automation guide and CLI it links to: `llms.txt`, `workshop.py`
+- the icons: `icon.svg`, `favicon.ico`, `apple-touch-icon.png`
+
+No build step or backend is required. The first font load downloads Pyodide, fontTools, and Brotli from jsDelivr, so the page needs an internet connection.
+
+## Command line
+
+`workshop.py` needs Python 3 with `fonttools` and `brotli` installed (`python3 -m pip install fonttools brotli`).
+
+```sh
+python3 workshop.py inspect Font.ttf
+python3 workshop.py adjust Font.ttf --tracking 0.05 --stretch 120 -o Font-Wide.ttf --css
+python3 workshop.py adjust Variable.ttf --axis wght=700 --family "My Sans"
+```
+
+`inspect` lists the font's axes and the adjustment ranges that apply to it. The ranges match the page's sliders. Add `--json` to either command for one JSON object on stdout, including font and adjustment errors. `python3 workshop.py adjust --help` lists every flag.
+
+## Automation
+
+[`llms.txt`](llms.txt) is the guide for AI agents and scripts. It covers the CLI's JSON contract, the page's `window.typeWorkshop` API, and the `data-state` attribute that tells browser automation when an export is ready. The page footer links to it.
 
 ## Verification status
 
@@ -26,9 +48,11 @@ Tracking keeps combining marks and other zero-advance glyphs at zero. Negative t
 
 For a reported font, add `--font /path/to/font.ttf` to the tracking checks. The matrix includes unchanged tracking as well as negative and positive adjustments.
 
-Run `node --experimental-vm-modules scripts/verify-async.cjs` for deterministic file-selection races, worker initialization, and failure recovery checks. This uses Node's built-in modules and mocks the DOM and Python engine.
+Run `node --experimental-vm-modules scripts/verify-async.cjs` for deterministic file-selection races, worker initialization, and failure recovery checks. This uses Node's built-in modules and mocks the DOM and Python engine. It also covers the automation API's state transitions and validation.
 
-The entry script URL in `index.html` carries a release version, which is forwarded to the worker URL. Bump that version whenever shipping application or worker changes so browsers fetch both scripts together.
+Run `python3 scripts/verify-cli.py` for the command line's JSON output, exit codes, and validation messages. It also checks that CLI exports are byte-identical to the engine's, ignoring the save timestamp.
+
+The entry script URL in `index.html` carries a release version. The page forwards it to `worker.js`, which forwards it to `engine.py`. Bump that version whenever you ship application, worker, or engine changes so browsers fetch all three together.
 
 Run `python3 scripts/verify-edge-fonts.py` for synthetic composite geometry, compressed input formats, cached-width invalidation, font-name fallbacks, and CID-keyed CFF checks. The CID case uses the system Noto Sans CJK collection when available. CFF exports support both CID private dictionaries and older seac composite outlines. Tracking discards cached device widths and refreshes the average-width metadata.
 

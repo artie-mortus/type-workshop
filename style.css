@@ -15,4 +15,4 @@
 @media(max-width:760px){main{padding:86px 22px 22px}.theme-switch{top:12px;right:14px;transform:none;flex-direction:row;width:auto;padding:7px 12px;gap:10px}.switch-rocker{width:24px;height:42px}.switch-rocker span{height:16px}[data-theme=light] .switch-rocker span{transform:translateY(18px)}}
 @media(prefers-reduced-motion:reduce){.switch-rocker span{transition:none}}
 
-@media(min-width:761px) and (max-width:1000px){.workspace{grid-template-columns:1fr}aside{border:0;padding:0}#specimens{grid-template-columns:1fr}}
+@media(min-width:761px) and (max-width:1000px){.workspace{grid-template-columns:1fr}aside{border:0;padding:0}#specimens{grid-template-columns:1fr}}footer a{color:var(--accent)}

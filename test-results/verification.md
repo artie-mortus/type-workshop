@@ -67,3 +67,31 @@ Validation:
 - A deterministic sample of 39 supported system-font subsets passes three stretch/tracking combinations each, checking every glyph advance and decoded CFF charstring width. One bitmap-only font was excluded because its outlines are outside the declared supported formats. Subsetting dropped source FFTM metadata with expected fontTools warnings.
 
 The last audit pass found no further bugs in these checks. Browser and corpus harnesses remain locally in `test-results/gui/audit-site.cjs` and `test-results/audit-corpus.py`. CFF2 support, point-attached TrueType composite stretching, and rescaling GPOS kerning remain declared limitations rather than newly supported features.
+
+## Agent and command-line access
+
+Verified 2026-11-17. The Python engine moved from a string in `worker.js` to `engine.py`, which the worker fetches on the release version and the new `workshop.py` command line imports. The page gained a `data-state` attribute and a `window.typeWorkshop` API, both documented in `llms.txt`.
+
+- `python3 scripts/verify-cli.py` passes. It covers `inspect` and `adjust` JSON output, default names, overwrite protection, eleven error cases with exact messages and exit status 1, usage errors with exit status 2, and `wdth` fonts that reject `--stretch`. CLI exports for TrueType, CFF, and variable fixtures are byte-identical to direct engine output apart from the save timestamp. A 0.001 em tracking change fails the comparison, so the comparison is not vacuous.
+- `node --experimental-vm-modules scripts/verify-async.cjs` passes the earlier race and recovery cases plus `data-state` transitions, API validation, API load, adjust and export, a versioned `engine.py` fetch, and retry after `engine.py` returns 404.
+- `verify-fonts.py`, `verify-tracking.py`, and `verify-edge-fonts.py` pass unchanged against `engine.py`.
+- Real headless Chromium with Pyodide passes `test-results/gui/verify-agents.cjs`. The file input and slider move `data-state` through `loading`, `generating`, and `ready`. The API loads fonts by URL, adjusts, and returns export bytes. Out-of-range settings reject without discarding the current export. Engine and load errors set `data-state=error`, and `reset()` recovers. The footer and `<link rel=help>` both reach `llms.txt`. No page errors and no overflow at 390 px.
+- Browser exports match CLI exports for the same settings in every advance and outline. The CFF subset matched byte for byte. Carlito at 80% stretch had 18 composite glyphs and Adwaita Sans at wght 700 had 337 with recalculated bounds one unit apart. Pyodide 0.27.7 bundles fontTools 4.51.0 and this machine has 4.67.0, and the two releases round composite bounds differently.
+
+Found during this check, not fixed: Chromium's font sanitizer rejects the full system `FreeSans.otf` ("Failed validating CharStrings INDEX"). The page passes CFF charstrings through unchanged for the Original preview, so it cannot load that font, while the CLI processes it. The subset in `test-results/cff-input.otf` loads normally.
+
+Screenshots and exported fonts are under `test-results/gui/agents/`.
+
+### Review pass
+
+A second review of the same change found and fixed these holes:
+
+- The page's tracking slider snaps to 0.001 em, so `adjust({tracking: 0.0505})` generated 0.051 while the CLI used 0.0505. Both now round half up to the step `engine.py` reports, and the CLI reports the applied value. Real Chromium applied 0.051 em, the same as the CLI.
+- `adjust({width: 120})` succeeded and changed nothing. Unknown setting names, non-number values, non-string names, and a non-object `axes` now reject before the page changes.
+- An empty family name reached the engine and produced a different message than the CLI. Both now reject it up front with the same message, and the current export survives.
+- `load(url)` rejected URLs without a font extension, such as `download?id=3`, although the engine reads the format from the bytes. A plain array or number failed deep inside the loader. Both now behave predictably.
+- `reset()` clicked a DOM button, which does nothing while that button is disabled, and the handler hard-coded `0` and `100`. It now calls the handler directly with the engine's defaults.
+- The page's CSS used the untrimmed family name while the font stored the trimmed one.
+- CLI JSON reported `stretch: null` for an applied 100 percent and listed only the axes passed on the command line. It now reports applied stretch and every axis location.
+
+`verify-async.cjs` covers each API case and overlapping `adjust` calls. `verify-cli.py` covers rounding and applied-value reports. `verify-agents.cjs` repeats the rounding, unknown-setting, and empty-name checks in Chromium.

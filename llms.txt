@@ -1,0 +1,70 @@
+# Type workshop
+
+> Adjusts a font's tracking (letter spacing), horizontal width, and variable axis locations, then exports a static TTF or OTF with new family and style names. Accepts TTF, OTF, WOFF, and WOFF2 with TrueType or CFF outlines. CFF2 is unsupported.
+
+Pick one route. Both run the same engine, so the same settings produce the same advances and outlines. The page uses fontTools 4.51, which can round recalculated composite-glyph bounds one unit differently from newer fontTools releases.
+
+- **Command line.** Use this when you have a shell and Python 3. Font files never touch a browser.
+- **This page.** Use this when you can only drive a browser. It processes fonts in the page with Pyodide and uploads nothing.
+
+## Settings
+
+The command line and the page accept the same settings and ranges.
+
+| Setting | Range | Notes |
+| --- | --- | --- |
+| tracking | -0.1 to 0.2 em | Rounded half up to 0.001 em. Added to every non-zero advance. Zero-width marks stay at zero. |
+| stretch | 50 to 200 percent | Synthetic. Only for fonts without a `wdth` axis. |
+| axes | each axis's own min to max | `wdth` replaces stretch when the font has one. Unset axes stay at their defaults. |
+| family, style | non-empty text | Defaults: source family + " Workshop", source style. |
+
+Inspect a font first to get its axes and the ranges that apply to it.
+
+## Command line
+
+Download [workshop.py](workshop.py) and [engine.py](engine.py) into one directory. Install `fonttools` and `brotli` with pip.
+
+```sh
+python3 workshop.py inspect Font.ttf --json
+python3 workshop.py adjust Font.ttf --tracking 0.05 --stretch 120 -o Font-Wide.ttf --json
+python3 workshop.py adjust Variable.ttf --axis wght=700 --family "My Sans" --json
+```
+
+With `--json`, stdout carries exactly one JSON object. Success returns the output path, format, `@font-face` CSS, and the settings applied: rounded tracking, stretch (`null` for fonts with a `wdth` axis), and every axis location. Font and adjustment failures return `{"error": "..."}` with exit status 1. Invalid arguments exit 2 and print usage text to stderr, not JSON. `adjust` refuses to overwrite a file unless you pass `--force`. Run `python3 workshop.py adjust --help` for every flag.
+
+## Browser page
+
+Wait for the page to load, then call `window.typeWorkshop` from page scripts. `load`, `adjust`, and `reset` return a promise that resolves with a state report once the export is ready, or rejects with the page's error message. `state()` and `getExport()` return immediately.
+
+```js
+await typeWorkshop.load('https://example.com/Font.woff2'); // or a File, Blob, ArrayBuffer or Uint8Array, plus an optional name
+const report = await typeWorkshop.adjust({tracking: 0.05, stretch: 120, family: 'My Sans', filename: 'my-sans'});
+report.font.axes;      // [{tag, min, max, default}]
+report.export.css;     // @font-face CSS
+const {data, filename, format} = typeWorkshop.getExport(); // data is a Uint8Array of the font file
+```
+
+`adjust` takes any subset of `tracking`, `stretch`, `axes` (an object of tag to value), `family`, `style`, and `filename`. Omitted settings keep their current values. It rejects unknown names, wrong types, and out-of-range values before changing anything. If you call `adjust` again before the first call settles, both settle with the final export. `reset()` restores the default tracking, width, and axes but keeps the names. Fetching a font by URL needs that server to allow cross-origin requests. A URL without a font extension still loads.
+
+The first load downloads Pyodide and fontTools from jsDelivr. Allow up to two minutes before treating it as a failure.
+
+### Driving the controls directly
+
+The `data-state` attribute on `<html>` holds the page status: `empty`, `loading`, `generating`, `ready`, or `error`. `#status` holds the readable message. Wait for `ready` or `error` after every change.
+
+| Control | Selector | How to set it |
+| --- | --- | --- |
+| Font file | `#file` | Set the file input's files |
+| Tracking | `#tracking` | Range input in em. Set `value`, then dispatch `input` |
+| Stretch or width | `#width` | Range input. Percent for stretch, axis units when the font has `wdth` |
+| Other axes | `[data-axis="wght"]` | Range input per axis. Set `value`, then dispatch `input` |
+| Family, style, filename | `#family`, `#style`, `#filename` | Text inputs. Dispatch `input` after setting |
+| Download | `#download` | Enabled only in the `ready` state |
+| CSS | `#css`, `#copy` | `#css` holds the `@font-face` rule |
+
+## Limits
+
+- Synthetic stretch scales outlines and removes TrueType hinting. It thickens or thins vertical strokes.
+- GPOS kerning values keep their original size.
+- Variable fonts export as a single static instance.
+- Modifying and redistributing a font may need permission under its license.

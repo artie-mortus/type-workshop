@@ -1,9 +1,11 @@
 from pathlib import Path
+import sys
 from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
 import io, json
 root=Path(__file__).resolve().parents[1]
-exec((root/'worker.js').read_text().split('const source = `')[1].split('`;')[0])
+sys.path.insert(0, str(root))
+from engine import generate, read
 fixtures={'ttf':'/usr/share/fonts/carlito/Carlito-Regular.ttf','cff':'/usr/share/fonts/gnu-free/FreeSans.otf','variable':'/usr/share/fonts/Adwaita/AdwaitaSans-Italic.ttf'}
 for kind,path in fixtures.items():
  data=Path(path).read_bytes()
