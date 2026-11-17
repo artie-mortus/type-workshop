@@ -3,13 +3,14 @@
 The browser worker fetches this file and runs it in Pyodide, so it must stay
 importable with only fontTools and brotli available.
 """
-import io, json, re
+import hashlib, io, json, math, re
 from fontTools.ttLib import TTFont
 from fontTools.varLib.instancer import instantiateVariableFont
 from fontTools.pens.transformPen import TransformPen
 from fontTools.pens.recordingPen import DecomposingRecordingPen
 from fontTools.pens.t2CharStringPen import T2CharStringPen
 from fontTools.ttLib.tables.ttProgram import Program
+from fontTools.misc.psCharStrings import encodeIntT2, encodeFixed
 
 def read(data):
  f=TTFont(io.BytesIO(bytes(data)))
@@ -77,8 +78,114 @@ def inspect(data):
  )
  return json.dumps(dict(family=f['name'].getBestFamilyName() or 'Untitled',style=f['name'].getBestSubFamilyName() or 'Regular',upem=f['head'].unitsPerEm,glyphs=len(f.getGlyphOrder()),axes=axes,outlines='cff' if cff else 'truetype',output_format='otf' if cff else 'ttf',repaired_glyphs=f.repaired_glyphs,adjustments=adjustments))
 
+WIDTH_IF_ODD={1,3,18,23,19,20,21,14} # stems, hint masks, rmoveto, endchar
+WIDTH_IF_EVEN={22,4} # hmoveto, vmoveto
+
+def t2_number(bytecode,i):
+ """Decode the Type 2 number at i. Returns (value, next index)."""
+ b=bytecode[i]
+ if b==28: return int.from_bytes(bytecode[i+1:i+3],'big',signed=True),i+3
+ if b<=246: return b-139,i+1
+ if b<=250: return (b-247)*256+bytecode[i+1]+108,i+2
+ if b<=254: return -(b-251)*256-bytecode[i+1]-108,i+2
+ return int.from_bytes(bytecode[i+1:i+5],'big',signed=True)/65536,i+5
+
+def subr_bias(subrs):
+ return 107 if len(subrs)<1240 else 1131 if len(subrs)<33900 else 32768
+
+def width_operand(cs):
+ """Find a charstring's leading width without decoding its outline.
+
+ Follows subroutine calls up to the first operator that fixes the width. Returns (present, end),
+ where the width occupies bytecode[:end] when present, or None if the width lies inside a
+ subroutine or the charstring does something unexpected first.
+ """
+ local=getattr(cs.private,'Subrs',None) or []; glob=cs.globalSubrs or []
+ stack=[] # one entry per operand: (start, end) in the main charstring, or None
+ def run(bytecode,main,depth):
+  i=0
+  while i<len(bytecode):
+   b=bytecode[i]
+   if b>=32 or b==28:
+    value,after=t2_number(bytecode,i); stack.append((i,after,value) if main else (None,None,value)); i=after; continue
+   if b in (10,29): # callsubr, callgsubr
+    if not stack or depth>=10: return None
+    subrs=local if b==10 else glob
+    index=stack.pop()[2]+subr_bias(subrs)
+    if not isinstance(index,int) or not 0<=index<len(subrs): return None
+    subr=subrs[index]
+    if subr.bytecode is None: subr.compile() # decoded earlier, for example by repair_charstrings
+    found=run(subr.bytecode,False,depth+1)
+    if found!='return': return found
+    i+=1; continue
+   if b==11 and not main: return 'return'
+   if b in WIDTH_IF_ODD: present=len(stack)%2==1
+   elif b in WIDTH_IF_EVEN: present=len(stack)%2==0
+   else: return None
+   if not present: return False,0
+   start,stop,_=stack[0]
+   return (True,stop) if start==0 else None
+  return None
+ if cs.bytecode is None: cs.compile() # decoded earlier, for example by repair_charstrings
+ found=run(cs.bytecode,True,0)
+ return found if isinstance(found,tuple) else None
+
+CFF_WIDTH_ERROR='This stretch or tracking makes a glyph wider than CFF outlines can store. Reduce the adjustment.'
+
+def cff_width_operand(width,nominal):
+ """A charstring stores width-nominalWidthX as a 16-bit number. fontTools writes larger
+ values in a form readers decode as a small fraction, so refuse them."""
+ value=width-nominal
+ if not -32768<=value<=32767: raise ValueError(CFF_WIDTH_ERROR)
+ return value
+
+def set_charstring_width(cs,width):
+ """Rewrite only the width operand, keeping hints and subroutine calls. False if it cannot be located."""
+ found=width_operand(cs)
+ if found is None: return False
+ present,end=found
+ value=cff_width_operand(width,cs.private.nominalWidthX)
+ encoded=encodeIntT2(int(value)) if value==int(value) else encodeFixed(value)
+ cs.bytecode=encoded+cs.bytecode[end:]
+ return True
+
+extents_cache={}
+def glyph_extents(data):
+ """Outline width per glyph, measured as fontTools' hhea.recalc measures it. Cached for repeated adjustments."""
+ key=hashlib.sha256(bytes(data)).digest()
+ if key not in extents_cache:
+  f=read(data); extents={}
+  if 'glyf' in f:
+   glyf=f['glyf']
+   for name in f.getGlyphOrder():
+    g=glyf[name]
+    if g.numberOfContours==0: continue
+    if g.numberOfContours<0 and not hasattr(g,'xMax'): g.recalcBounds(glyf)
+    extents[name]=g.xMax-g.xMin
+  else:
+   charstrings=f['CFF '].cff.topDictIndex[0].CharStrings
+   for name in f.getGlyphOrder():
+    bounds=charstrings[name].calcBounds(charstrings)
+    if bounds is not None: extents[name]=int(math.ceil(bounds[2])-math.floor(bounds[0]))
+  extents_cache.clear(); extents_cache[key]=extents
+ return extents_cache[key]
+
+def update_hhea(f,extents):
+ """Recompute the advance-dependent hhea fields the same way fontTools' hhea.recalc does."""
+ hhea=f['hhea']; hmtx=f['hmtx']
+ hhea.advanceWidthMax=max(advance for advance,_ in hmtx.metrics.values())
+ if extents:
+  hhea.minLeftSideBearing=min(hmtx[name][1] for name in extents)
+  hhea.minRightSideBearing=min(hmtx[name][0]-hmtx[name][1]-width for name,width in extents.items())
+  hhea.xMaxExtent=max(hmtx[name][1]+width for name,width in extents.items())
+ else: # no glyph has outlines
+  hhea.minLeftSideBearing=hhea.minRightSideBearing=hhea.xMaxExtent=0
+
 def generate(data,options):
  o=json.loads(options); f=read(data)
+ # Instancing and stretch change outlines, so fontTools must recalculate bounds when saving.
+ # Otherwise the outlines are untouched, and recalculating every glyph's bounds dominates the time.
+ outlines_changed='fvar' in f or o['scale']!=1
  if 'fvar' in f:
   location={a.axisTag:o['axes'].get(a.axisTag,a.defaultValue) for a in f['fvar'].axes}
   f=instantiateVariableFont(f,location,inplace=True)
@@ -87,6 +194,9 @@ def generate(data,options):
  # Tight tracking can close a narrow glyph's advance, but cannot make it negative.
  widths={name:max(0,round(advance*scale)+tracking) if advance else 0 for name,(advance,_) in f['hmtx'].metrics.items()}
  if any(width>65535 for width in widths.values()): raise ValueError('This stretch or tracking exceeds the font width limit. Reduce the adjustment.')
+ # Outline coordinates and bounding boxes are signed 16-bit numbers.
+ head=f['head']
+ if scale!=1 and max(abs(head.xMin),abs(head.xMax))*scale>32767: raise ValueError('This stretch makes the outlines wider than the font format can store. Reduce the stretch.')
  if scale!=1:
   if 'glyf' in f:
    for g in f['glyf'].glyphs.values():
@@ -105,22 +215,32 @@ def generate(data,options):
  if tracking!=0:
   for tag in ['hdmx','LTSH']:
    if tag in f: del f[tag]
- if 'CFF ' in f and (scale!=1 or tracking!=0):
+ redraw=f.getGlyphOrder() if scale!=1 else []
+ if 'CFF ' in f and scale==1 and tracking!=0:
+  # Tracking alone changes only widths. Rewrite the width operand and keep hints and subroutines.
+  charstrings=f['CFF '].cff.topDictIndex[0].CharStrings
+  redraw=[name for name in f.getGlyphOrder() if not set_charstring_width(charstrings[name],widths[name])]
+ if 'CFF ' in f and redraw:
    top=f['CFF '].cff.topDictIndex[0]; gs=f.getGlyphSet()
    recordings={}
-   for name in f.getGlyphOrder():
+   for name in redraw:
     pen=DecomposingRecordingPen(gs); gs[name].draw(TransformPen(pen,(scale,0,0,1,0,0))); recordings[name]=pen
    # CID-keyed CFF fonts store a separate Private dictionary per font dict.
-   privates={name:top.CharStrings[name].private for name in f.getGlyphOrder()}
-   for private in privates.values():
-    private.nominalWidthX=0
-    private.defaultWidthX=0
+   privates={name:top.CharStrings[name].private for name in redraw}
+   if scale!=1:
+    # Every glyph is redrawn, so explicit widths can replace the nominal and default widths.
+    for private in privates.values():
+     private.nominalWidthX=0
+     private.defaultWidthX=0
    for name,recording in recordings.items():
-    pen=T2CharStringPen(widths[name],None); recording.replay(pen)
+    # T2CharStringPen writes the width as is, so subtract the glyph's nominal width.
+    pen=T2CharStringPen(cff_width_operand(widths[name],privates[name].nominalWidthX),None); recording.replay(pen)
     top.CharStrings[name]=pen.getCharString(private=privates[name],globalSubrs=top.GlobalSubrs)
  for name,(advance,lsb) in list(f['hmtx'].metrics.items()):
   f['hmtx'][name]=(widths[name],round(lsb*scale))
  if 'OS/2' in f: f['OS/2'].recalcAvgCharWidth(f)
+ f.recalcBBoxes=outlines_changed
+ if not outlines_changed and tracking!=0: update_hhea(f,glyph_extents(data))
  family=o['family'].strip(); style=o['style'].strip()
  if not family or not style: raise ValueError('Family and style names cannot be empty.')
  ps=re.sub('[^A-Za-z0-9-]','',family+'-'+style)[:63] or 'Workshop-Regular'

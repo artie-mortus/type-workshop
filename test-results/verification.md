@@ -119,3 +119,42 @@ Verified 2026-11-17. OTS checked 114 system TTF and OTF files under 6 MB, each a
 - `verify-edge-fonts.py` parses stored flag bytes in stretched synthetic and Adwaita Mono exports. It also requires default and tracking-only exports to copy the `glyf` table byte for byte. The check fails without the cleanup and fails with the unguarded first attempt.
 - Real Chromium loads the default, tracking-only, and stretched Adwaita Mono exports. `verify-agents.cjs` stretches Adwaita Mono on the page through Pyodide.
 - CLI `adjust` now reports `repaired_glyphs` in JSON and text output, so a caller that never runs `inspect` still learns the engine changed a glyph.
+
+## Large-font export speed
+
+Verified 2026-11-17 with Noto Sans CJK Regular, 65,535 CID-keyed CFF glyphs and 16.5 MB. Profiling a default export showed that 19 of its 20 seconds went to work the export did not need:
+
+- fontTools recalculates bounds on save twice, once for `hhea` and once for the CFF `FontBBox`. Each pass decodes and draws every glyph, and drawing discards each charstring's bytes, so fontTools then re-encodes all 112,000 charstrings and subroutines.
+- Tracking at 100% stretch redrew and re-encoded every CFF outline to change one width operand per glyph. It also flattened subroutines and dropped hints.
+- A TrueType tracking export never loaded `glyf`, so fontTools skipped its `hhea` recalculation. Carlito at +0.1 em reported `advanceWidthMax` 2720 against a true 2925.
+
+Changes:
+
+- `generate()` lets fontTools recalculate bounds only when stretch or variable instancing changes outlines. Otherwise the bounds are provably unchanged.
+- At 100% stretch, tracking rewrites each CFF width operand in the charstring bytes, encoded against that glyph's own `nominalWidthX`. The scan follows subroutine calls with an operand stack. When an explicit width lives inside a shared subroutine, that glyph falls back to the previous redraw.
+- `update_hhea()` sets `advanceWidthMax`, `minLeftSideBearing`, `minRightSideBearing`, and `xMaxExtent` with fontTools' formulas. It measures extents on a separate parse of the source, cached per font so later slider moves skip it.
+
+Measured in Chromium through Pyodide, warm engine, the same Noto CJK file:
+
+| Step | Before | After |
+| --- | --- | --- |
+| Load, both previews | 93.5 s | 8.7 s |
+| First tracking change | 102.0 s | 24.7 s |
+| Later tracking change | 109.3 s | 5.9 s |
+
+CPython: default export 20.5 s to 0.8 s, and tracking 41.7 s to 9.3 s first and 1.2 s after. The tracking export is 128 KB larger than the source instead of flattening subroutines, and FreeSans's tracking export shrank from 884 KB to 845 KB. Every Noto CJK charstring width matches `hmtx`, every outline matches the source exactly, and `hhea` equals fontTools' own recalculation.
+
+Checks:
+
+- `verify-edge-fonts.py` adds width layouts with implicit, explicit, 3-byte, subroutine-hint, and subroutine-width cases plus a nonzero `nominalWidthX`. It fails if the 3-byte number length is wrong, the bug that corrupted `cid00385` in the first attempt. `check_metrics` compares `hhea` with fontTools' recalculation for TrueType and CFF at 100% and 120% stretch, and fails against the previous engine.
+- All 114 system fonts pass OTS at default and adjusted settings. 228 tracking-only exports at +0.05 and -0.03 em pass OTS with every CFF width matching `hmtx`.
+- Across every system CFF font at +0.05 em, 74,213 width-edited glyphs draw exactly like the source. The 6,190 glyphs whose explicit width sits in a shared subroutine take the redraw, and each matches the previous engine's output exactly and the source bounds within one unit.
+
+### Format limits
+
+Verified 2026-11-17 with a synthetic glyph 30,000 units wide.
+
+- CFF charstrings store `width - nominalWidthX` as a 16-bit number. With tracking plus 110% stretch, the export wrote `hmtx` 33,200 while its charstring width decoded as 0.507, because fontTools writes larger values in a form readers decode as 16.16 fixed. CFF exports now refuse such widths with "This stretch or tracking makes a glyph wider than CFF outlines can store. Reduce the adjustment."
+- Stretching past the 16-bit coordinate range failed with fontTools' "Value 34800 does not fit in format h for xMax". The engine now checks the scaled font bounding box first and says "This stretch makes the outlines wider than the font format can store. Reduce the stretch." TrueType advances are unsigned, so a 33,200-unit TrueType advance still exports.
+- `update_hhea()` now sets the bearing fields to 0 for a font without outlines, as fontTools does.
+- `check_format_limits` in `verify-edge-fonts.py` covers both formats and fails against the previous engine. The browser harness now compares a CFF tracking-only export from Pyodide with the CLI, and the two are byte-identical. All 114 system fonts still pass OTS at default and adjusted settings.

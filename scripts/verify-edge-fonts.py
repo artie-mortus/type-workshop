@@ -15,7 +15,7 @@ from fontTools import subset
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
-from engine import generate, inspect, moveto_surplus
+from engine import generate, inspect, moveto_surplus, width_operand
 
 def export(font, **changes):
     stream = io.BytesIO(); font.save(stream)
@@ -80,7 +80,15 @@ def check_metrics():
     average = output['OS/2'].xAvgCharWidth
     output['OS/2'].recalcAvgCharWidth(output)
     assert average == output['OS/2'].xAvgCharWidth, 'Average width must reflect adjusted metrics'
-    print('PASS: tracking invalidates device metrics and refreshes average width')
+    # Exports without stretch skip fontTools' bounds recalculation, so the engine sets hhea itself.
+    for cff in [False, True]:
+        for scale in [1, 1.2]:
+            output = export(fixture(cff=cff), scale=scale, tracking=.08)
+            fields = ['advanceWidthMax', 'minLeftSideBearing', 'minRightSideBearing', 'xMaxExtent']
+            stored = [getattr(output['hhea'], field) for field in fields]
+            output['hhea'].recalc(output)
+            assert stored == [getattr(output['hhea'], field) for field in fields], (cff, scale, stored)
+    print('PASS: tracking invalidates device metrics and refreshes average width and hhea metrics')
 
 def verify_cff_widths(font):
     for name in font.getGlyphOrder():
@@ -202,6 +210,110 @@ def check_overlap_flags():
             assert export(source, scale=1, tracking=tracking).reader['glyf'] == original, (label, tracking)
     print('PASS: OVERLAP_SIMPLE stays on the first stored flag when stretching; unstretched glyf copies through unchanged')
 
+def check_tracking_width_edits():
+    """Tracking at 100% stretch rewrites only CFF width operands, keeping hints and subroutines."""
+    from fontTools.cffLib import SubrsIndex
+    from fontTools.pens.recordingPen import RecordingPen
+    square = [100, 0, 'rlineto', 0, 100, 'rlineto', -100, 0, 'rlineto', 'endchar']
+    programs = {
+        '.notdef': ['endchar'],
+        'implicit': [0, 50, 'hstem', 10, 20, 'rmoveto', *square],
+        'explicit': [20, 0, 50, 'hstem', 10, 20, 'rmoveto', *square],
+        'short': [1500, 0, 50, 'hstem', 10, 20, 'rmoveto', *square],  # beyond 1131, so stored as 28 xx xx
+        'subrhints': [20, -107, 'callsubr', 10, 20, 'rmoveto', *square],  # subr 0 holds "0 50 hstem"
+        'subrwidth': [-106, 'callsubr', 10, 20, 'rmoveto', *square],  # subr 1 holds the width too
+    }
+    names = list(programs)
+    builder = FontBuilder(1000, isTTF=False)
+    builder.setupGlyphOrder(names)
+    builder.setupCharacterMap({65 + i: name for i, name in enumerate(names[1:])})
+    advances = {'.notdef': 600, 'implicit': 600, 'explicit': 520, 'short': 2000, 'subrhints': 520, 'subrwidth': 530}
+    builder.setupHorizontalMetrics({name: (advances[name], 10) for name in names})
+    builder.setupHorizontalHeader(ascent=800, descent=-200)
+    builder.setupNameTable(dict(familyName='Width Source', styleName='Regular'))
+    builder.setupOS2(); builder.setupPost()
+    builder.setupCFF('WidthSource', {}, {name: T2CharString(program=program) for name, program in programs.items()},
+                     dict(nominalWidthX=500, defaultWidthX=600))
+    top = builder.font['CFF '].cff.topDictIndex[0]
+    top.Private.Subrs = SubrsIndex()
+    for program in [[0, 50, 'hstem', 'return'], [30, 0, 50, 'hstem', 'return']]:
+        top.Private.Subrs.append(T2CharString(program=program, private=top.Private))
+    for name in names:
+        top.CharStrings[name].private = top.Private
+    stream = io.BytesIO(); builder.font.save(stream)
+    source = TTFont(io.BytesIO(stream.getvalue()))
+    located = {name: width_operand(source['CFF '].cff.topDictIndex[0].CharStrings[name]) for name in names[1:]}
+    assert located == {'implicit': (False, 0), 'explicit': (True, 1), 'short': (True, 3), 'subrhints': (True, 1), 'subrwidth': None}, located
+    output = export(source, tracking=0.05)
+    charstrings = output['CFF '].cff.topDictIndex[0].CharStrings
+    original = source.getGlyphSet(); adjusted = output.getGlyphSet()
+    for name in names:
+        a, b = RecordingPen(), RecordingPen()
+        original[name].draw(a); adjusted[name].draw(b)
+        assert a.value == b.value, name
+        assert output['hmtx'][name][0] == advances[name] + 50, name
+    verify_cff_widths(output)
+    for name in ['implicit', 'explicit', 'short', 'subrhints']:
+        program = charstrings[name].program
+        assert 'hstem' in program or 'callsubr' in program, f'{name} must keep its hints and subroutine calls'
+    assert output['CFF '].cff.topDictIndex[0].Private.nominalWidthX == 500
+    assert output['hhea'].advanceWidthMax == 2050
+    print('PASS: tracking rewrites CFF widths in place across implicit, explicit, 3-byte and subroutine layouts')
+
+def check_format_limits():
+    """Widths and coordinates past 16 bits must fail with a readable error, never a corrupt font."""
+    def wide_font(cff):
+        builder = FontBuilder(1000, isTTF=not cff)
+        builder.setupGlyphOrder(['.notdef', 'wide'])
+        builder.setupCharacterMap({65: 'wide'})
+        builder.setupHorizontalMetrics({'.notdef': (500, 0), 'wide': (30000, 0)})
+        builder.setupHorizontalHeader(ascent=800, descent=-200)
+        builder.setupNameTable(dict(familyName='Wide', styleName='Regular'))
+        builder.setupOS2(); builder.setupPost()
+        if cff:
+            builder.setupCFF('Wide', {}, {'.notdef': T2CharString(program=['endchar']),
+                                          'wide': T2CharString(program=[0, 0, 'rmoveto', 29000, 0, 'rlineto', 0, 500, 'rlineto', 'endchar'])}, {})
+        else:
+            glyphs = {}
+            for name in ['.notdef', 'wide']:
+                pen = TTGlyphPen(glyphs)
+                if name == 'wide':
+                    pen.moveTo((0, 0)); pen.lineTo((29000, 0)); pen.lineTo((29000, 500)); pen.closePath()
+                glyphs[name] = pen.glyph()
+            builder.setupGlyf(glyphs)
+        return builder.font
+    for cff in [False, True]:
+        output = export(wide_font(cff), scale=1, tracking=0.2)
+        assert output['hmtx']['wide'][0] == 30200
+        if cff: verify_cff_widths(output)
+        # TrueType advances are unsigned 16-bit, so 33200 fits; CFF widths stop at 32767.
+        refused = [(1.2, 0), (1.1, 0.2)] if cff else [(1.2, 0)]
+        if not cff:
+            assert export(wide_font(cff), scale=1.1, tracking=0.2)['hmtx']['wide'][0] == 33200
+        for scale, tracking in refused:
+            try:
+                export(wide_font(cff), scale=scale, tracking=tracking)
+            except ValueError as error:
+                assert 'Reduce the' in str(error), error
+            else:
+                raise AssertionError(f'{"CFF" if cff else "TrueType"} at {scale}x must refuse coordinates past 16 bits')
+    try:
+        export(wide_font(True), scale=1, tracking=2.8)
+    except ValueError as error:
+        assert str(error) == 'This stretch or tracking makes a glyph wider than CFF outlines can store. Reduce the adjustment.'
+    else:
+        raise AssertionError('A CFF width past 32767 must be refused')
+    # A font without outlines gets the same hhea values fontTools would compute.
+    empty = fixture()
+    for name in empty.getGlyphOrder():
+        empty['glyf'][name] = TTGlyphPen(None).glyph()
+    output = export(empty, tracking=0.1)
+    fields = ['advanceWidthMax', 'minLeftSideBearing', 'minRightSideBearing', 'xMaxExtent']
+    stored = [getattr(output['hhea'], field) for field in fields]
+    output['hhea'].recalc(output)
+    assert stored == [getattr(output['hhea'], field) for field in fields], stored
+    print('PASS: 16-bit width and coordinate limits fail with readable errors; outline-free hhea matches fontTools')
+
 def check_names():
     font = fixture()
     font['name'].names = []
@@ -217,7 +329,7 @@ def check_names():
 
 if __name__ == '__main__':
     failures = []
-    for check in [check_seac, check_cid, check_metrics, check_geometry_and_formats, check_stray_moveto_operands, check_overlap_flags, check_names]:
+    for check in [check_seac, check_cid, check_metrics, check_geometry_and_formats, check_stray_moveto_operands, check_overlap_flags, check_tracking_width_edits, check_format_limits, check_names]:
         try: check()
         except Exception as error:
             failures.append(error); print(f'FAIL: {check.__name__}: {type(error).__name__}: {error}')

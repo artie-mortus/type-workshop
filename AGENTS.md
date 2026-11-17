@@ -8,6 +8,8 @@ Static font adjustment page plus a command line. Read `README.md` for usage and 
 
 Reading `f['glyf']` makes fontTools re-encode every glyph on save. Only the stretch and variable-instancing paths may load it. Other paths must leave it unloaded so the original glyph bytes copy through, which `verify-edge-fonts.py` checks.
 
+`generate()` lets fontTools recalculate bounds on save only when `outlines_changed` is true, because recalculating every glyph's bounds dominates export time on large fonts. Any new code that moves or reshapes outlines must set it. When advances change without outline changes, `update_hhea()` sets the width-dependent `hhea` fields itself.
+
 Adjustment limits live in `engine.TRACKING_RANGE`, `engine.TRACKING_STEP`, and `engine.STRETCH_RANGE`. `inspect()` reports them as `adjustments`. The page sliders, the page API, and the CLI all read limits from there. The `min` and `max` on the sliders in `index.html` are placeholders until a font loads.
 
 ## Public contract
