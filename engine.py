@@ -14,7 +14,48 @@ from fontTools.ttLib.tables.ttProgram import Program
 def read(data):
  f=TTFont(io.BytesIO(bytes(data)))
  if 'glyf' not in f and 'CFF ' not in f: raise ValueError('Unsupported outlines. Only TrueType glyf and CFF fonts are supported; CFF2 is not supported.')
+ f.repaired_glyphs=repair_charstrings(f) if 'CFF ' in f else []
  return f
+
+STEM_OPERATORS={1,3,18,23} # hstem, vstem, hstemhm, vstemhm
+MOVETO_ARGUMENTS={21:2,22:1,4:1} # rmoveto, hmoveto, vmoveto
+
+def moveto_surplus(bytecode):
+ """Count stray operands before a charstring's first moveto, reading only the bytes up to it."""
+ operands=0; stems=False; i=0
+ while i<len(bytecode):
+  b=bytecode[i]
+  if b>=32: operands+=1; i+=1 if b<=246 else 5 if b==255 else 2; continue
+  if b==28: operands+=1; i+=3; continue
+  if b in STEM_OPERATORS: stems=True; operands=0; i+=1; continue
+  # Hint masks, subroutine calls and drawing operators end the scan. A first move inside a
+  # subroutine is not examined.
+  if b not in MOVETO_ARGUMENTS: return 0,0
+  need=MOVETO_ARGUMENTS[b]
+  # Without earlier stem hints, an odd extra operand is the glyph width.
+  width=0 if stems else (operands-need)%2
+  return width,max(0,operands-need-width)
+ return 0,0
+
+def repair_charstrings(f):
+ """Drop stray operands before the first moveto, as FreeType does.
+
+ Some FontForge builds omit the vstemhm operator before the first moveto, leaving its stem
+ operands on the stack. Browsers' sanitizer rejects the whole font, and fontTools draws the
+ glyph from the stray operands instead of the move, displacing the contour.
+ """
+ charstrings=f['CFF '].cff.topDictIndex[0].CharStrings; repaired=[]
+ for name in f.getGlyphOrder():
+  cs=charstrings[name]
+  if cs.bytecode is None: continue
+  width,surplus=moveto_surplus(cs.bytecode)
+  if not surplus: continue
+  cs.decompile(); program=list(cs.program)
+  move=next(i for i,token in enumerate(program) if token in ('rmoveto','hmoveto','vmoveto'))
+  start=max((i+1 for i,token in enumerate(program[:move]) if isinstance(token,str)),default=0)+width
+  del program[start:start+surplus]
+  cs.setProgram(program); repaired.append(name)
+ return repaired
 
 # Adjustment ranges for the page sliders, the page API and workshop.py.
 TRACKING_RANGE=(-0.1,0.2) # em
@@ -34,7 +75,7 @@ def inspect(data):
   stretch=None if any(a['tag']=='wdth' for a in axes) else dict(min=STRETCH_RANGE[0],max=STRETCH_RANGE[1],default=100,unit='percent'),
   axes={a['tag']:dict(min=a['min'],max=a['max'],default=a['default']) for a in axes},
  )
- return json.dumps(dict(family=f['name'].getBestFamilyName() or 'Untitled',style=f['name'].getBestSubFamilyName() or 'Regular',upem=f['head'].unitsPerEm,glyphs=len(f.getGlyphOrder()),axes=axes,outlines='cff' if cff else 'truetype',output_format='otf' if cff else 'ttf',adjustments=adjustments))
+ return json.dumps(dict(family=f['name'].getBestFamilyName() or 'Untitled',style=f['name'].getBestSubFamilyName() or 'Regular',upem=f['head'].unitsPerEm,glyphs=len(f.getGlyphOrder()),axes=axes,outlines='cff' if cff else 'truetype',output_format='otf' if cff else 'ttf',repaired_glyphs=f.repaired_glyphs,adjustments=adjustments))
 
 def generate(data,options):
  o=json.loads(options); f=read(data)
@@ -89,6 +130,16 @@ def generate(data,options):
   f['name'].setName(value,id,3,1,0x409)
  if 'CFF ' in f:
   cff=f['CFF '].cff; cff.fontNames=[ps]; top=cff.topDictIndex[0]; top.FamilyName=family; top.FullName=family+' '+style
+ if f.isLoaded('glyf'):
+  # A repeated first flag copies OVERLAP_SIMPLE (bit 6) onto later points when fontTools decodes
+  # a glyph, and saving re-encodes every glyph once glyf is loaded. The spec allows the bit only
+  # on the first flag, and browsers reject fonts that store it later. An unloaded glyf table is
+  # copied byte for byte, so leave it unloaded.
+  glyf=f['glyf']
+  for g in glyf.glyphs.values():
+   g.expand(glyf)
+   if g.numberOfContours>0:
+    for i in range(1,len(g.flags)): g.flags[i]&=0xBF
  if 'DSIG' in f: del f['DSIG']
  f.flavor=None
  out=io.BytesIO(); f.save(out)

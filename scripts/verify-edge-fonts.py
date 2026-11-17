@@ -1,5 +1,6 @@
 """Export checks for composite outlines, CID CFF, cached metrics, input formats, and font names."""
 import io
+import struct
 import json
 from pathlib import Path
 import sys
@@ -14,7 +15,7 @@ from fontTools import subset
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
-from engine import generate, inspect
+from engine import generate, inspect, moveto_surplus
 
 def export(font, **changes):
     stream = io.BytesIO(); font.save(stream)
@@ -109,6 +110,98 @@ def check_geometry_and_formats():
                 if cff: verify_cff_widths(output)
     print('PASS: TrueType and CFF outlines, transformed composites, TTF/OTF/WOFF/WOFF2 inputs')
 
+def check_stray_moveto_operands():
+    """FreeSans's Bsmallcap omits vstemhm, leaving stem operands before its first rmoveto.
+
+    Browsers reject the font, and fontTools draws from the stray operands. Rasterizers use the last operands.
+    """
+    names = ['.notdef', 'stems', 'nostems', 'hmove', 'valid']
+    square = [100, 0, 'rlineto', 0, 100, 'rlineto', -100, 0, 'rlineto', 'endchar']
+    programs = {
+        '.notdef': [600, 'endchar'],
+        'stems': [600, 0, 50, 'hstemhm', 10, 20, 30, 40, 100, 200, 'rmoveto', *square],
+        'nostems': [600, 10, 20, 100, 200, 'rmoveto', *square],
+        'hmove': [600, 0, 50, 'hstemhm', 7, 8, 100, 'hmoveto', *square],
+        'valid': [600, 0, 50, 'hstemhm', 100, 200, 'rmoveto', *square],
+    }
+    builder = FontBuilder(1000, isTTF=False)
+    builder.setupGlyphOrder(names)
+    builder.setupCharacterMap({65: 'stems', 66: 'nostems', 67: 'hmove', 68: 'valid'})
+    builder.setupHorizontalMetrics({name: (600, 0) for name in names})
+    builder.setupHorizontalHeader(ascent=800, descent=-200)
+    builder.setupNameTable(dict(familyName='Stray Source', styleName='Regular'))
+    builder.setupOS2(); builder.setupPost()
+    builder.setupCFF('StraySource', {}, {name: T2CharString(program=program) for name, program in programs.items()}, {})
+    stream = io.BytesIO(); builder.font.save(stream)
+    source = TTFont(io.BytesIO(stream.getvalue()))
+    assert json.loads(inspect(stream.getvalue()))['repaired_glyphs'] == ['stems', 'nostems', 'hmove']
+    starts = {'stems': (100, 200), 'nostems': (100, 200), 'hmove': (100, 0), 'valid': (100, 200)}
+    for scale, tracking in [(1, 0), (1.5, 0.05)]:
+        output = export(source, scale=scale, tracking=tracking)
+        charstrings = output['CFF '].cff.topDictIndex[0].CharStrings
+        glyphs = output.getGlyphSet()
+        for name, (x, y) in starts.items():
+            assert moveto_surplus(charstrings[name].bytecode)[1] == 0, (name, scale)
+            bounds = BoundsPen(glyphs); glyphs[name].draw(bounds)
+            assert bounds.bounds == (round(x * scale), y, round((x + 100) * scale), y + 100), (name, scale, bounds.bounds)
+        verify_cff_widths(output)
+    # Valid charstrings keep their exact bytes when nothing is adjusted.
+    untouched = export(source, scale=1, tracking=0)['CFF '].cff.topDictIndex[0].CharStrings['valid'].bytecode
+    assert untouched == TTFont(io.BytesIO(stream.getvalue()))['CFF '].cff.topDictIndex[0].CharStrings['valid'].bytecode
+    path = Path('/usr/share/fonts/gnu-free/FreeSans.otf')
+    if path.exists():
+        output = export(TTFont(path), scale=1, tracking=0)
+        bounds = BoundsPen(output.getGlyphSet()); output.getGlyphSet()['Bsmallcap'].draw(bounds)
+        assert bounds.bounds == (60, 0, 458, 524), bounds.bounds
+    print('PASS: stray operands before the first moveto are dropped, outlines land where rasterizers draw them')
+
+def stored_flags(data):
+    """Return the flag bytes a simple glyph stores, before repeats are expanded."""
+    contours = struct.unpack('>h', data[:2])[0]
+    end = struct.unpack(f'>{contours}H', data[10:10 + 2 * contours])
+    offset = 10 + 2 * contours
+    offset += 2 + struct.unpack('>H', data[offset:offset + 2])[0]
+    points, flags = end[-1] + 1, []
+    while points > 0:
+        flag = data[offset]; offset += 1; flags.append(flag); points -= 1
+        if flag & 8:
+            points -= data[offset]; offset += 1
+    return flags
+
+def check_overlap_flags():
+    """Adwaita Mono repeats its first flag, so fontTools decodes OVERLAP_SIMPLE onto later points.
+
+    Stretching re-encodes those glyphs. Browsers reject bit 6 on any stored flag but the first.
+    """
+    font = fixture()
+    for name in ['A', 'acute']:
+        glyph = font['glyf'][name]
+        glyph.flags[0] |= 0x40; glyph.flags[1] |= 0x40
+    fonts = [('synthetic', font)]
+    path = Path('/usr/share/fonts/Adwaita/AdwaitaMono-Regular.ttf')
+    if path.exists():
+        fonts.append(('Adwaita Mono', TTFont(path)))
+    for label, source in fonts:
+        output = export(source, scale=1.2)
+        glyf, checked = output['glyf'], 0
+        for name in output.getGlyphOrder():
+            data = getattr(glyf.glyphs[name], "data", b"")
+            if len(data) and struct.unpack('>h', data[:2])[0] > 0:
+                flags = stored_flags(data)
+                assert not any(flag & 0x40 for flag in flags[1:]), (label, name, flags[:4])
+                checked += 1
+        for name in ['A', 'acute'] if label == 'synthetic' else []:
+            assert stored_flags(glyf.glyphs[name].data)[0] & 0x40, 'The first flag keeps OVERLAP_SIMPLE'
+        assert checked
+    # Without stretch or instancing, the glyf table must stay unloaded and copy through byte for byte.
+    # Loading it re-encodes every glyph on save, which broke default Adwaita Mono exports.
+    for label, source in fonts[1:]:
+        stream = io.BytesIO(); source.save(stream)
+        original = TTFont(io.BytesIO(stream.getvalue())).reader['glyf']
+        for tracking in [0, 0.05]:
+            assert export(source, scale=1, tracking=tracking).reader['glyf'] == original, (label, tracking)
+    print('PASS: OVERLAP_SIMPLE stays on the first stored flag when stretching; unstretched glyf copies through unchanged')
+
 def check_names():
     font = fixture()
     font['name'].names = []
@@ -124,7 +217,7 @@ def check_names():
 
 if __name__ == '__main__':
     failures = []
-    for check in [check_seac, check_cid, check_metrics, check_geometry_and_formats, check_names]:
+    for check in [check_seac, check_cid, check_metrics, check_geometry_and_formats, check_stray_moveto_operands, check_overlap_flags, check_names]:
         try: check()
         except Exception as error:
             failures.append(error); print(f'FAIL: {check.__name__}: {type(error).__name__}: {error}')

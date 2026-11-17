@@ -54,7 +54,7 @@ Run `python3 scripts/verify-cli.py` for the command line's JSON output, exit cod
 
 The entry script URL in `index.html` carries a release version. The page forwards it to `worker.js`, which forwards it to `engine.py`. Bump that version whenever you ship application, worker, or engine changes so browsers fetch all three together.
 
-Run `python3 scripts/verify-edge-fonts.py` for synthetic composite geometry, compressed input formats, cached-width invalidation, font-name fallbacks, and CID-keyed CFF checks. The CID case uses the system Noto Sans CJK collection when available. CFF exports support both CID private dictionaries and older seac composite outlines. Tracking discards cached device widths and refreshes the average-width metadata.
+Run `python3 scripts/verify-edge-fonts.py` for synthetic composite geometry, compressed input formats, cached-width invalidation, font-name fallbacks, and CID-keyed CFF checks. The CID case uses the system Noto Sans CJK collection when available. CFF exports support both CID private dictionaries and older seac composite outlines. Some FontForge builds, including the one behind FreeSans, leave stem operands before a glyph's first move. Browsers reject such fonts, and fontTools draws the glyph in the wrong place. The engine drops those operands as FreeType does, and `inspect` lists the glyphs it repaired. Tracking discards cached device widths and refreshes the average-width metadata.
 
 Changing a font or adjustment clears the previous export until a new font is ready. Copy CSS and Download remain disabled during generation or after an error.
 

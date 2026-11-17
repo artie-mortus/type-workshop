@@ -108,6 +108,8 @@ def run_inspect(args):
         f'Stretch: {stretch["min"]:g} to {stretch["max"]:g} percent' if stretch else 'Stretch: use --axis wdth=VALUE',
         f'Exports as: .{meta["output_format"]}',
     ]
+    if meta['repaired_glyphs']:
+        lines.append(f'Repaired outlines: {", ".join(meta["repaired_glyphs"])} (stray operands before the first move)')
     return '\n'.join(lines)
 
 
@@ -158,11 +160,13 @@ def run_adjust(args):
         return dict(
             output=str(output), bytes=len(result), format=meta['output_format'],
             family=family, style=style, tracking=applied_tracking,
-            stretch=applied_stretch, axes=location, css=css, warnings=warnings,
+            stretch=applied_stretch, axes=location, repaired_glyphs=meta['repaired_glyphs'], css=css, warnings=warnings,
         )
     for warning in warnings:
         print(f'warning: {warning}', file=sys.stderr)
     message = f'Wrote {output} ({len(result):,} bytes) as "{family}" {style}.'
+    if meta['repaired_glyphs']:
+        message += f'\nRepaired outlines: {", ".join(meta["repaired_glyphs"])}'
     return message + ('\n\n' + css if args.css else '')
 
 

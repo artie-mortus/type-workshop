@@ -6,6 +6,8 @@ Static font adjustment page plus a command line. Read `README.md` for usage and 
 
 `engine.py` is the only font-processing code. `worker.js` fetches it and runs it in Pyodide 0.27.7. `workshop.py` and every `scripts/verify-*.py` import it under CPython. Keep its imports to the standard library, fontTools, and brotli, because those are the packages the worker loads.
 
+Reading `f['glyf']` makes fontTools re-encode every glyph on save. Only the stretch and variable-instancing paths may load it. Other paths must leave it unloaded so the original glyph bytes copy through, which `verify-edge-fonts.py` checks.
+
 Adjustment limits live in `engine.TRACKING_RANGE`, `engine.TRACKING_STEP`, and `engine.STRETCH_RANGE`. `inspect()` reports them as `adjustments`. The page sliders, the page API, and the CLI all read limits from there. The `min` and `max` on the sliders in `index.html` are placeholders until a font loads.
 
 ## Public contract

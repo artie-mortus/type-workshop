@@ -78,7 +78,7 @@ Verified 2026-11-17. The Python engine moved from a string in `worker.js` to `en
 - Real headless Chromium with Pyodide passes `test-results/gui/verify-agents.cjs`. The file input and slider move `data-state` through `loading`, `generating`, and `ready`. The API loads fonts by URL, adjusts, and returns export bytes. Out-of-range settings reject without discarding the current export. Engine and load errors set `data-state=error`, and `reset()` recovers. The footer and `<link rel=help>` both reach `llms.txt`. No page errors and no overflow at 390 px.
 - Browser exports match CLI exports for the same settings in every advance and outline. The CFF subset matched byte for byte. Carlito at 80% stretch had 18 composite glyphs and Adwaita Sans at wght 700 had 337 with recalculated bounds one unit apart. Pyodide 0.27.7 bundles fontTools 4.51.0 and this machine has 4.67.0, and the two releases round composite bounds differently.
 
-Found during this check, not fixed: Chromium's font sanitizer rejects the full system `FreeSans.otf` ("Failed validating CharStrings INDEX"). The page passes CFF charstrings through unchanged for the Original preview, so it cannot load that font, while the CLI processes it. The subset in `test-results/cff-input.otf` loads normally.
+Found during this check and fixed in the next section: Chromium's font sanitizer rejects the full system `FreeSans.otf` ("Failed validating CharStrings INDEX"). The page passes CFF charstrings through unchanged for the Original preview, so it cannot load that font, while the CLI processes it. The subset in `test-results/cff-input.otf` loads normally.
 
 Screenshots and exported fonts are under `test-results/gui/agents/`.
 
@@ -95,3 +95,27 @@ A second review of the same change found and fixed these holes:
 - CLI JSON reported `stretch: null` for an applied 100 percent and listed only the axes passed on the command line. It now reports applied stretch and every axis location.
 
 `verify-async.cjs` covers each API case and overlapping `adjust` calls. `verify-cli.py` covers rounding and applied-value reports. `verify-agents.cjs` repeats the rounding, unknown-setting, and empty-name checks in Chromium.
+
+## Malformed CFF charstrings
+
+Verified 2026-11-17. Bisecting full FreeSans with the OpenType Sanitizer (OTS, the validator in Chromium and Firefox) isolated one failing glyph of 6,272: `Bsmallcap` (U+0299). Its charstring omits `vstemhm`, leaving six stem operands in front of `347 376 rmoveto`. That caused two failures:
+
+- At default settings the engine passed the charstring through, so OTS rejected the whole font. The page could not load FreeSans, and a default download would fail in browsers.
+- With any tracking or stretch, the engine redrew outlines through fontTools, which takes the first two operands as the move. Exports passed OTS but drew `Bsmallcap` at (-227, -292, 171, 232) instead of (60, 0, 458, 524). FreeType pops the last two operands, so desktop rendering of the original was correct.
+
+`engine.read()` now scans each CFF charstring's bytes up to its first moveto and drops stray operands, keeping the last ones as FreeType does. Only broken charstrings are decompiled and rewritten. Dropping the operands removes three stem hints from that glyph and leaves the hint count unchanged for any later hint masks. `inspect` reports the repaired glyphs, and the page and CLI show them.
+
+- OTS passes the default and adjusted FreeSans exports, and `Bsmallcap` draws at (60, 0, 458, 524), or exactly 1.2 times as wide at 120% stretch. The scan takes 0.02 s on FreeSans.
+- All 59 system CFF fonts export at default and adjusted settings with OTS passing. FreeSans is the only font repaired, and the other 58 keep byte-identical charstrings at default settings.
+- `python3 scripts/verify-edge-fonts.py` adds synthetic glyphs with stray operands after `hstemhm`, without stem hints, and before `hmoveto`, plus a valid control glyph whose bytes must not change. The check fails with the repair disabled.
+- Real Chromium loads full FreeSans through the file input, shows "repaired 1 malformed glyph outline", renders U+0299 on the baseline in both previews, and downloads a default export that passes OTS. The screenshot is `test-results/gui/agents/freesans-loaded.png`.
+
+### Hole hunt across all system fonts
+
+Verified 2026-11-17. OTS checked 114 system TTF and OTF files under 6 MB, each at its original bytes, at default settings, and at +0.05 em tracking with 120% stretch.
+
+- All four Adwaita Mono styles failed OTS and Chromium after stretching: "Bad glyph flag, bit 6 must be set to zero for flag 1". The source sets OVERLAP_SIMPLE on the first flag of 6,253 glyphs. In 462 of them, its flag encoding repeats that first flag onto the next point, so fontTools decodes the bit onto later points. Re-encoding a stretched glyph broke the repeat and stored the bit where the spec forbids it. On the page, stretching any Adwaita Mono style failed with "Cannot process this font".
+- The engine now clears bit 6 from every flag but the first. The first attempt read `f['glyf']` unconditionally, which made default and tracking-only exports re-encode every glyph and fail the same way. The fix runs only when stretching or instancing has already loaded `glyf`, and it decodes every glyph first so `save()` cannot re-encode one it missed. Points, first flags, and other flag bits are unchanged in all 6,253 affected glyphs.
+- `verify-edge-fonts.py` parses stored flag bytes in stretched synthetic and Adwaita Mono exports. It also requires default and tracking-only exports to copy the `glyf` table byte for byte. The check fails without the cleanup and fails with the unguarded first attempt.
+- Real Chromium loads the default, tracking-only, and stretched Adwaita Mono exports. `verify-agents.cjs` stretches Adwaita Mono on the page through Pyodide.
+- CLI `adjust` now reports `repaired_glyphs` in JSON and text output, so a caller that never runs `inspect` still learns the engine changed a glyph.

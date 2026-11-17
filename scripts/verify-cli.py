@@ -48,6 +48,7 @@ def check_inspect():
     assert meta['adjustments']['tracking'] == dict(min=-0.1, max=0.2, default=0, step=0.001, unit='em')
     code, out, _ = cli('inspect', FIXTURES['cff'], '--json')
     assert json.loads(out)['output_format'] == 'otf'
+    assert json.loads(out)['repaired_glyphs'] == ['Bsmallcap'] and meta['repaired_glyphs'] == []
     code, out, _ = cli('inspect', FIXTURES['ttf'])
     assert code == 0 and 'Tracking: -0.1 to 0.2 em' in out
     print('PASS: inspect reports outlines, output format, axes and allowed ranges')
@@ -79,6 +80,7 @@ def check_defaults(work):
     report = json.loads(out)
     assert report['output'] == 'FreeSans-workshop.otf' and report['family'] == 'FreeSans Workshop'
     assert report['warnings'] == [] and 'src: url("FreeSans-workshop.otf")' in report['css']
+    assert report['repaired_glyphs'] == ['Bsmallcap'], 'adjust must report outlines the engine repaired'
     assert TTFont(work / report['output'])['name'].getDebugName(1) == 'FreeSans Workshop'
     code, out, _ = cli('adjust', FIXTURES['cff'], '--json', cwd=work)
     assert code == 1 and 'already exists' in json.loads(out)['error']

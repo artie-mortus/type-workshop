@@ -18,7 +18,7 @@ The command line and the page accept the same settings and ranges.
 | axes | each axis's own min to max | `wdth` replaces stretch when the font has one. Unset axes stay at their defaults. |
 | family, style | non-empty text | Defaults: source family + " Workshop", source style. |
 
-Inspect a font first to get its axes and the ranges that apply to it.
+Inspect a font first to get its axes and the ranges that apply to it. Its `repaired_glyphs` list names malformed CFF outlines that every export repairs.
 
 ## Command line
 
@@ -30,7 +30,7 @@ python3 workshop.py adjust Font.ttf --tracking 0.05 --stretch 120 -o Font-Wide.t
 python3 workshop.py adjust Variable.ttf --axis wght=700 --family "My Sans" --json
 ```
 
-With `--json`, stdout carries exactly one JSON object. Success returns the output path, format, `@font-face` CSS, and the settings applied: rounded tracking, stretch (`null` for fonts with a `wdth` axis), and every axis location. Font and adjustment failures return `{"error": "..."}` with exit status 1. Invalid arguments exit 2 and print usage text to stderr, not JSON. `adjust` refuses to overwrite a file unless you pass `--force`. Run `python3 workshop.py adjust --help` for every flag.
+With `--json`, stdout carries exactly one JSON object. Success returns the output path, format, `@font-face` CSS, `repaired_glyphs`, and the settings applied: rounded tracking, stretch (`null` for fonts with a `wdth` axis), and every axis location. Font and adjustment failures return `{"error": "..."}` with exit status 1. Invalid arguments exit 2 and print usage text to stderr, not JSON. `adjust` refuses to overwrite a file unless you pass `--force`. Run `python3 workshop.py adjust --help` for every flag.
 
 ## Browser page
 

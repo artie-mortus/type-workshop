@@ -29,7 +29,7 @@ async function appChecks() {
  first.resolve(new Uint8Array([1]));await tick();
  assert.equal(workers[0].messages.length,1,'A superseded file read must not start an inspect job');
  const inspect=workers[0].messages[0];assert.equal(inspect.bytes[0],2);
- const meta={family:'New',style:'Regular',axes:[],upem:2048,glyphs:2,adjustments:{tracking:{min:-0.1,max:0.2,default:0,step:0.001},stretch:{min:50,max:200,default:100},axes:{}}};
+ const meta={family:'New',style:'Regular',axes:[],upem:2048,glyphs:2,repaired_glyphs:[],adjustments:{tracking:{min:-0.1,max:0.2,default:0,step:0.001},stretch:{min:50,max:200,default:100},axes:{}}};
  workers[0].reply(inspect,{meta});await tick();workers[0].reply(workers[0].messages[1],{bytes:new Uint8Array([2])});await latest;await slow;
  assert.equal(element('controls').disabled,false);assert.match(element('meta').textContent,/New/);
  run('clearTimeout(timer)');
